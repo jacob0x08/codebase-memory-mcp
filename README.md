@@ -141,6 +141,35 @@ codebase-memory-mcp --ui=true --port=9749
 
 Open `http://localhost:9749` in your browser. The UI is owned by the shared coordination daemon, so concurrent agent sessions do not start duplicate HTTP servers.
 
+### HTTP MCP endpoint (`POST /mcp`)
+
+When the graph UI is running (`--ui=true`), the same HTTP server also exposes a full MCP JSON-RPC endpoint at `POST http://127.0.0.1:9749/mcp`. Point any MCP client that speaks the Streamable-HTTP transport at that URL — Kiro, Cursor, custom SDKs, or a plain `curl`:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9749/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+```
+
+`initialize`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, and `ping` all work exactly as they do over stdio. The endpoint is bound to `127.0.0.1` only; requests are refused unless the `Host` header is `127.0.0.1:9749` or `localhost:9749` (DNS-rebinding protection). `GET /mcp` returns `405` — this server does not implement the optional server-initiated SSE side-channel, every response is returned in the POST reply.
+
+There is one known limitation vs. the stdio transport: `tools/call` of `index_repository` on `/mcp` returns an `isError` result telling the caller to trigger indexing through the coordinated `POST /api/index` route (or the stdio transport, which is daemon-backed). All read-only tools — `search_graph`, `trace_path`, `get_architecture`, `query_graph`, `get_code_snippet`, and the rest of the 15-tool registry — work over `/mcp` without restriction.
+
+Example Kiro `~/.kiro/settings/mcp.json` entry:
+
+```json
+{
+  "mcpServers": {
+    "codebase-memory-mcp-http": {
+      "url": "http://127.0.0.1:9749/mcp",
+      "transport": "http"
+    }
+  }
+}
+```
+
+The distinct `POST /rpc` route continues to serve the graph UI itself and is intentionally restricted to `list_projects`, `get_graph_schema`, and `get_code_snippet` — that constraint stops a foreign page from escalating through the browser and is unchanged by `/mcp`.
+
 ### Auto-Index
 
 Enable automatic indexing on MCP session start:
