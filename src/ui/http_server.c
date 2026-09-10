@@ -6,7 +6,13 @@
  *   GET /             → embedded index.html
  *   GET /assets/...   → embedded JS/CSS
  *   POST /rpc         → JSON-RPC dispatch via own cbm_mcp_server_t
- *   OPTIONS /rpc      → CORS preflight (for vite dev on :5173)
+ *                       (restricted to three UI-only read tools)
+ *   POST /mcp         → full MCP JSON-RPC endpoint for external AI agents
+ *                       (Kiro / etc.). Read-only: index_repository still
+ *                       returns the "use /api/index" isError guidance.
+ *   GET  /mcp         → 405 (this server does not implement the optional
+ *                       server-initiated SSE side-channel of Streamable HTTP)
+ *   OPTIONS /rpc,/mcp → CORS preflight (for vite dev on :5173)
  *   GET/POST /api/... → UI support endpoints (layout, index, browse, …)
  *   *                 → 404
  *
@@ -1807,6 +1813,44 @@ static void handle_rpc(cbm_http_conn_t *c, const cbm_http_req_t *req, cbm_mcp_se
     }
 }
 
+/* POST /mcp — full MCP JSON-RPC endpoint for external AI agents.
+ *
+ * Unlike /rpc (which restricts calls to the three UI-only read tools so a
+ * malicious page cannot escalate through the browser), /mcp exposes the
+ * complete MCP protocol: initialize, tools/list, tools/call for every tool
+ * the server exposes, prompts/list, prompts/get, resources/list, and ping.
+ *
+ * The same host / origin / method / content-type protections apply
+ * (see request_passes_http_security). The endpoint is bound to 127.0.0.1
+ * only (see httpd.c) and DNS-rebinding is refused by host_is_this_server.
+ *
+ * KNOWN LIMITATION: this server's MCP instance is constructed with the
+ * read-only index executor (http_read_only_index_rejected), so a
+ * tools/call of `index_repository` returns an isError result telling the
+ * caller to use the coordinated /api/index route (or the stdio transport,
+ * which is daemon-backed). All read-only tools work exactly as they do
+ * over stdio. */
+static void handle_mcp_full(cbm_http_conn_t *c, const cbm_http_req_t *req,
+                            cbm_mcp_server_t *mcp) {
+    if (req->body_len == 0 || req->body_len > MAX_BODY_SIZE || !req->body) {
+        cbm_http_replyf(c, 400, g_cors_json,
+                        "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,"
+                        "\"message\":\"invalid request size\"},\"id\":null}");
+        return;
+    }
+
+    /* req->body is NUL-terminated by the transport */
+    char *response = cbm_mcp_server_handle(mcp, req->body);
+
+    if (response) {
+        cbm_http_replyf(c, 200, g_cors_json, "%s", response);
+        free(response);
+    } else {
+        /* JSON-RPC notification (no id) — spec allows no response body. */
+        cbm_http_replyf(c, 204, g_cors, "%s", "");
+    }
+}
+
 /* ── Request dispatch ─────────────────────────────────────────── */
 
 /* True when the Host header names the loopback interface and exact port the
@@ -1824,7 +1868,8 @@ static bool host_is_this_server(const char *host, int port) {
 }
 
 static bool route_is_protected(const char *path) {
-    return strcmp(path, "/api") == 0 || strncmp(path, "/api/", 5) == 0 || strcmp(path, "/rpc") == 0;
+    return strcmp(path, "/api") == 0 || strncmp(path, "/api/", 5) == 0 ||
+           strcmp(path, "/rpc") == 0 || strcmp(path, "/mcp") == 0;
 }
 
 static bool content_type_is_json(const char *content_type) {
@@ -1964,6 +2009,24 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* POST /rpc → JSON-RPC dispatch (reuses existing MCP tools) */
     if (is_post && cbm_http_path_match(req->path, "/rpc")) {
         handle_rpc(c, req, srv->mcp);
+        return;
+    }
+
+    /* POST /mcp → full MCP JSON-RPC endpoint for external agents (Kiro, etc.).
+     * GET /mcp responds 405: this server does not implement the optional
+     * Streamable-HTTP SSE side-channel; every response is returned in the
+     * POST reply, which is what MCP clients that only need request/response
+     * semantics rely on. */
+    if (is_post && cbm_http_path_match(req->path, "/mcp")) {
+        handle_mcp_full(c, req, srv->mcp);
+        return;
+    }
+    if (is_get && cbm_http_path_match(req->path, "/mcp")) {
+        cbm_http_replyf(c, 405,
+                        "Allow: POST, OPTIONS\r\nContent-Type: application/json\r\n",
+                        "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,"
+                        "\"message\":\"Use POST for MCP JSON-RPC; this endpoint does not "
+                        "provide a server-initiated SSE stream\"},\"id\":null}");
         return;
     }
 

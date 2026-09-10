@@ -1235,6 +1235,98 @@ TEST(ui_server_rpc_allows_only_ui_read_tools) {
     PASS();
 }
 
+TEST(ui_server_mcp_full_accepts_initialize_and_tools_list) {
+    th_server_t ts;
+    ASSERT_EQ(th_server_start(&ts), 0);
+    int port = cbm_http_server_port(ts.srv);
+    char req[2048];
+    char resp[16384];
+
+    /* /mcp accepts initialize (which /rpc rejects with 403). */
+    const char *initialize =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+    snprintf(req, sizeof(req),
+             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+             "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+             port, strlen(initialize), initialize);
+    int n = th_http_raw(port, req, resp, sizeof(resp));
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(th_status(resp), 200);
+    ASSERT_NOT_NULL(strstr(resp, "\"protocolVersion\""));
+    ASSERT_NOT_NULL(strstr(resp, "\"serverInfo\""));
+
+    /* tools/list must return the full server tool registry, not the
+     * three-tool UI subset. */
+    const char *tools_list =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
+    snprintf(req, sizeof(req),
+             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+             "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+             port, strlen(tools_list), tools_list);
+    n = th_http_raw(port, req, resp, sizeof(resp));
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(th_status(resp), 200);
+    ASSERT_NOT_NULL(strstr(resp, "\"tools\""));
+    /* A tool that /rpc's allowlist blocks but /mcp must advertise. */
+    ASSERT_NOT_NULL(strstr(resp, "\"search_graph\""));
+
+    th_server_stop(&ts);
+    PASS();
+}
+
+TEST(ui_server_mcp_full_get_returns_405) {
+    th_server_t ts;
+    ASSERT_EQ(th_server_start(&ts), 0);
+    int port = cbm_http_server_port(ts.srv);
+    char req[512];
+    char resp[4096];
+    snprintf(req, sizeof(req), "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n", port);
+    int n = th_http_raw(port, req, resp, sizeof(resp));
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(th_status(resp), 405);
+    ASSERT_NOT_NULL(strstr(resp, "Allow:"));
+    th_server_stop(&ts);
+    PASS();
+}
+
+TEST(ui_server_mcp_full_requires_json_content_type) {
+    th_server_t ts;
+    ASSERT_EQ(th_server_start(&ts), 0);
+    int port = cbm_http_server_port(ts.srv);
+    const char *body =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+    char req[1024];
+    char resp[4096];
+    snprintf(req, sizeof(req),
+             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
+             "Content-Type: text/plain\r\nContent-Length: %zu\r\n\r\n%s",
+             port, strlen(body), body);
+    int n = th_http_raw(port, req, resp, sizeof(resp));
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(th_status(resp), 415);
+    th_server_stop(&ts);
+    PASS();
+}
+
+TEST(ui_server_mcp_full_rejects_non_loopback_host) {
+    th_server_t ts;
+    ASSERT_EQ(th_server_start(&ts), 0);
+    int port = cbm_http_server_port(ts.srv);
+    const char *body =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+    char req[1024];
+    char resp[4096];
+    snprintf(req, sizeof(req),
+             "POST /mcp HTTP/1.1\r\nHost: attacker.example.com\r\n"
+             "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+             strlen(body), body);
+    int n = th_http_raw(port, req, resp, sizeof(resp));
+    ASSERT_GT(n, 0);
+    ASSERT_EQ(th_status(resp), 403);
+    th_server_stop(&ts);
+    PASS();
+}
+
 TEST(ui_server_oversized_body_rejected) {
     th_server_t ts;
     ASSERT_EQ(th_server_start(&ts), 0);
@@ -2409,6 +2501,10 @@ SUITE(httpd) {
     RUN_TEST(ui_server_rejects_foreign_and_null_origins);
     RUN_TEST(ui_server_mutations_require_json_content_type);
     RUN_TEST(ui_server_rpc_allows_only_ui_read_tools);
+    RUN_TEST(ui_server_mcp_full_accepts_initialize_and_tools_list);
+    RUN_TEST(ui_server_mcp_full_get_returns_405);
+    RUN_TEST(ui_server_mcp_full_requires_json_content_type);
+    RUN_TEST(ui_server_mcp_full_rejects_non_loopback_host);
     RUN_TEST(ui_server_oversized_body_rejected);
     RUN_TEST(ui_server_encoded_slash_not_routed);
     RUN_TEST(ui_server_nul_in_target_rejected);
