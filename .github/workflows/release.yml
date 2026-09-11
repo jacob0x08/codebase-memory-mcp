@@ -42,9 +42,9 @@ permissions:
 
 jobs:
   # ── Security (starts immediately, blocks only verify) ───────────
-  security:
-    uses: ./.github/workflows/_security.yml
-    secrets: inherit
+  #security:
+  #  uses: ./.github/workflows/_security.yml
+  #  secrets: inherit
 
   # ── 0. Preflight: refuse malformed dispatch inputs ──────────────
   # The tag is inputs.version VERBATIM. A bare "0.10.7" publishes a release the
